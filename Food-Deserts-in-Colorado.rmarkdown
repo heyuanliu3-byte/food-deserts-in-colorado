@@ -1,0 +1,87 @@
+---
+title: "科罗拉多州食品沙漠空间分布分析 (Math 3376 Final Project)"
+author: "Heyuan Liu"
+format: 
+  html:
+    embed-resources: true
+editor: visual
+---
+
+## 1. 导言 (Introduction)
+
+本报告旨在探讨科罗拉多州内的“食品沙漠”（Food Deserts）现象。食品沙漠是指低收入居民难以获得新鲜、健康且负担得起的食物的区域。通过分析超市准入、车辆可用性和收入水平，我们可以识别出哪些社区在基本生活保障上处于弱势。本分析利用 USDA 提供的 2010 年食品准入研究数据，并结合美国人口普查局的地理空间边界文件，旨在为消费者和政策制定者提供直观的社区食品安全状况参考。
+
+## 2. 必要的 R 包 (Packages)
+
+按照项目要求，本节加载所有分析所需的工具包。
+
+```{r}
+#| label: load-packages
+#| message: false
+
+
+# tidyverse: 用于数据清理、转换以及基于 ggplot2 的数据可视化
+library(tidyverse) 
+
+# readxl: 专门用于读取 Excel (.xlsx) 格式的 USDA 原始数据集
+library(readxl)    
+
+# sf: 空间要素包，用于读取 Shapefile 并在地图上绘制地理信息
+library(sf)        
+
+# viridis: 提供对色盲友好且专业美观的颜色方案，用于地图着色
+library(viridis)
+```
+
+```{r}
+#| label: data-preparation
+#| warning: false
+
+# 1. 读取 USDA Excel 数据 (主数据通常在第 3 个 Sheet)
+raw_food_data <- read_excel("data/FoodAccessResearchAtlasData2010.xlsx", sheet = 3)
+
+# 2. 筛选科罗拉多州数据并清理 ID 格式
+co_food_stats <- raw_food_data %>%
+  filter(State == "Colorado") %>%
+  mutate(CensusTract = as.character(CensusTract))
+
+# 3. 读取科罗拉多州地图数据 (Shapefile)
+co_map <- st_read("data/tl_2010_08_tract10.shp", quiet = TRUE)
+
+# 4. 合并地图与统计指标 (使用 left_join)
+final_project_data <- co_map %>%
+  left_join(co_food_stats, by = c("GEOID10" = "CensusTract"))
+
+# 5. 展示清理后的前 10 行数据 (满足评分标准，不超过 20 行)
+head(final_project_data, 10)
+```
+
+```{r}
+#| label: visual-map
+#| fig-cap: "科罗拉多州食品沙漠空间分布图 (2010)"
+#| warning: false
+
+ggplot(data = final_project_data) +
+  # 绘制地图图层，根据是否为食品沙漠填充颜色
+  geom_sf(aes(fill = as.factor(LILATracts_1And10)), color = "white", size = 0.05) +
+  
+  # 设置专业颜色主题
+  scale_fill_viridis_d(
+    name = "状态",
+    labels = c("非食品沙漠区", "食品沙漠区", "数据缺失"),
+    option = "plasma",
+    na.value = "grey80"
+  ) +
+  
+  # 添加符合标准的标题和说明
+  labs(
+    title = "科罗拉多州食品沙漠地理分布",
+    subtitle = "基于低收入和低准入指标 (城市1英里/农村10英里阈值)",
+    caption = "数据来源: USDA & US Census Bureau",
+    x = "经度",
+    y = "纬度"
+  ) +
+  
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```

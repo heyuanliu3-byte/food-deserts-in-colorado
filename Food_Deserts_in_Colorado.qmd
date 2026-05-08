@@ -1,0 +1,269 @@
+---
+title: "Food Deserts in Colorado"
+author: "Heyuan Liu, Minghao Xia"
+format:
+  html:
+    embed-resources: true
+editor: visual
+execute:
+  warning: false
+  message: false
+---
+
+## 1. Introduction
+
+Food deserts are areas where residents have limited access to affordable and healthy food. This issue matters because food access is related to income, transportation, neighborhood location, and public health. People who live in low-income or low-access communities may face greater difficulty buying fresh and healthy food on a regular basis.
+
+This project focuses on food desert census tracts in Colorado using 2010 data. The main research question is:
+
+**Where were food desert census tracts located in Colorado in 2010, and which counties had the largest number of food desert tracts?**
+
+To answer this question, I use the USDA Food Access Research Atlas data and join it with a 2010 Colorado census tract shapefile from the U.S. Census Bureau. The analysis includes data cleaning, spatial joining, an interactive map, a county-level summary table, an interactive county bar chart, and an urban-rural comparison.
+
+## 2. Packages
+
+The following R packages are used in this report. `tidyverse` is used for data cleaning, data wrangling, and visualization. `sf` is used to read and work with spatial shapefiles. `plotly` is used to turn ggplot2 graphics into interactive graphics.
+
+```{r}
+library(tidyverse) # Load tidyverse for data cleaning, wrangling, and ggplot2 visualizations.
+library(sf) # Load sf for reading and working with spatial shapefiles.
+library(plotly) # Load plotly for converting ggplot graphics into interactive graphics.
+```
+
+## 3. Data Preparation
+
+The first data source is the USDA Food Access Research Atlas 2010 data. This dataset contains census-tract-level information about food access, income, population, and related indicators.
+
+The original USDA Food Access Research Atlas file was downloaded as an Excel workbook (`.xlsx`). However, the workbook contained multiple sheets. Only one sheet contained the actual food access data used for this project, while the other sheets contained documentation or variable lookup information. When I tried to directly import the full Excel workbook in RStudio on Posit Cloud, the file was too large and the R session did not render reliably.
+
+To make the analysis more stable and reproducible, I created a simplified CSV version of the file by keeping only the actual data sheet from the original workbook and removing the extra non-data worksheets. This step did not change the observations or variables used in the analysis. It only changed the file format from Excel to CSV so that R could import the data more reliably.
+
+The second data source is the 2010 Colorado census tract shapefile. The shapefile provides the geographic boundaries and location information needed to map each census tract.
+
+A key cleaning step is the census tract ID. The USDA data uses `CensusTract`, while the shapefile uses `GEOID10`. These two variables must have the same 11-digit format for the join to work. If `CensusTract` is imported as a number, the leading zero in Colorado tract IDs may be lost. Therefore, I import `CensusTract` as a character variable and use `str_pad()` to make sure the IDs are 11 digits.
+
+Data sources:
+
+- USDA Food Access Research Atlas: <https://www.ers.usda.gov/data-products/food-access-research-atlas>
+- U.S. Census Bureau 2010 TIGER/Line Shapefiles: <https://www.census.gov/geographies/mapping-files/time-series/geo/tiger-line-file.2010.html>
+
+Data sources:
+
+- USDA Food Access Research Atlas: <https://www.ers.usda.gov/data-products/food-access-research-atlas>
+- U.S. Census Bureau 2010 TIGER/Line Shapefiles: <https://www.census.gov/geographies/mapping-files/time-series/geo/tiger-line-file.2010.html>
+
+```{r}
+food_file <- "data/FoodAccessResearchAtlasData2010.CSV" # Store the path to the simplified CSV version of the USDA food access data.
+shp_file <- "data/tl_2010_08_tract10.shp" # Store the path to the Colorado census tract shapefile.
+
+food_data <- read_csv( # Read the USDA food access CSV file into R.
+  food_file, # Use the food access file path stored above.
+  col_types = cols( # Manually set selected column types.
+    CensusTract = col_character(), # Read CensusTract as character to preserve leading zeros.
+    .default = col_guess() # Let R guess the data types for all other columns.
+  )
+)
+
+co_food <- food_data %>% # Start with the full USDA food access data.
+  filter(State == "CO") %>% # Keep only census tracts located in Colorado.
+  mutate( # Create and clean variables for the analysis.
+    CensusTract = str_pad(CensusTract, width = 11, side = "left", pad = "0"), # Make CensusTract an 11-digit ID.
+    food_desert = ifelse(LILATracts_1And10 == 1, "Food desert", "Not food desert"), # Create an easy-to-read food desert label.
+    food_desert = factor(food_desert, levels = c("Not food desert", "Food desert")) # Set the display order for the legend.
+  )
+
+co_shape <- st_read(shp_file, quiet = TRUE) # Read the Colorado census tract shapefile as an sf object.
+
+co_final <- co_shape %>% # Start with the spatial census tract shapefile.
+  left_join(co_food, by = c("GEOID10" = "CensusTract")) # Join the shapefile with USDA data by census tract ID.
+```
+
+### Join Check
+
+The table below checks whether the USDA data successfully joined with the Colorado shapefile. The most important value is `missing_after_join`. If it equals 0, then every Colorado census tract in the shapefile matched with the USDA food access data.
+
+```{r}
+join_check <- co_final %>% # Start with the joined spatial data.
+  st_drop_geometry() %>% # Remove the geometry column for regular summary calculations.
+  summarize( # Create a one-row summary table to check the join.
+    total_tracts = n(), # Count the total number of Colorado census tracts.
+    matched_tracts = sum(!is.na(LILATracts_1And10)), # Count tracts that matched with USDA data.
+    missing_after_join = sum(is.na(LILATracts_1And10)), # Count tracts that did not match after the join.
+    food_desert_tracts = sum(LILATracts_1And10 == 1, na.rm = TRUE) # Count food desert census tracts.
+  )
+
+join_check # Display the join check table.
+```
+
+The join was successful. The final dataset contains 1,249 Colorado census tracts, and all 1,249 tracts matched with the USDA data. Among these tracts, 187 were classified as food desert tracts.
+
+### Variable Explanation
+
+The most important variable in this project is `LILATracts_1And10`. This variable identifies census tracts that are both low income and low access. A value of 1 means the tract is classified as a low-income and low-access food desert tract, while a value of 0 means it is not.
+
+For this measure, low access means that a significant number or share of residents live far from the nearest supermarket, supercenter, or large grocery store. The distance threshold is different for urban and rural areas: more than 1 mile in urban areas and more than 10 miles in rural areas. This is why the variable name includes `1And10`.
+
+### Cleaned Data Preview
+
+The preview below shows selected variables from the cleaned dataset. The variable `food_desert` was created to make the food desert classification easier to read in tables and visualizations.
+
+```{r}
+co_final %>% # Start with the cleaned and joined spatial data.
+  st_drop_geometry() %>% # Remove geometry so the preview is easier to read.
+  select( # Select only the most important columns for previewing the data.
+    GEOID10, # Census tract ID from the shapefile.
+    State, # State abbreviation.
+    County, # County name.
+    POP2010, # Census tract population in 2010.
+    Urban, # Urban tract indicator.
+    Rural, # Rural tract indicator.
+    LILATracts_1And10, # Original USDA food desert indicator.
+    food_desert # Easy-to-read food desert label.
+  ) %>%
+  head(10) # Display the first 10 rows.
+```
+
+## 4. Exploratory Data Analysis
+
+### 4.1 Interactive Map of Food Desert Census Tracts
+
+The interactive map below shows the spatial distribution of food desert census tracts in Colorado. Each point represents a census tract. Red points are food desert tracts, while gray points are not food desert tracts. Readers can hover over each point to see the county name, census tract ID, and 2010 population.
+
+Instead of converting the full census tract polygons into an interactive plot, this map uses the internal longitude and latitude points provided in the shapefile. This keeps the map interactive while making the report easier to render in Posit Cloud.
+
+```{r}
+map_points <- co_final %>% # Start with the joined spatial data.
+  st_drop_geometry() %>% # Remove polygon geometry to make the interactive map render faster.
+  mutate( # Create longitude, latitude, and hover text variables.
+    lon = as.numeric(INTPTLON10), # Convert the internal longitude point to numeric.
+    lat = as.numeric(INTPTLAT10), # Convert the internal latitude point to numeric.
+    hover_text = paste0("County: ", County, "<br>Tract ID: ", GEOID10, "<br>Population 2010: ", POP2010) # Create hover text for each tract.
+  )
+
+map_plot <- ggplot( # Create a static ggplot map first.
+  map_points, # Use the point data frame created above.
+  aes(x = lon, y = lat, color = food_desert, text = hover_text) # Map location, color, and hover text.
+) +
+  geom_point(size = 1.5, alpha = 0.6) + # Add semi-transparent points to represent census tracts.
+  scale_color_manual( # Manually set colors for the food desert categories.
+    values = c("Not food desert" = "gray", "Food desert" = "red"), # Use gray for non-food desert and red for food desert.
+    name = "Status" # Set the legend title.
+  ) +
+  labs( # Add plot title and axis labels.
+    title = "Food Desert Census Tracts in Colorado", # Add the main title.
+    x = "Longitude", # Label the x-axis.
+    y = "Latitude" # Label the y-axis.
+  ) +
+  theme_minimal() # Use a clean minimal theme.
+
+ggplotly(map_plot, tooltip = "text") # Convert the ggplot map into an interactive plotly graphic.
+```
+
+The map shows that food desert tracts were not located in only one part of Colorado. Some food desert tracts appear in large rural areas, while others appear in more urbanized counties. Because this interactive version uses representative points rather than full tract polygons, it is easier to render in Posit Cloud while still showing the geographic pattern.
+
+### 4.2 County-Level Summary
+
+To better understand the pattern, I summarized the data by county. This table shows the counties with the largest number of food desert census tracts.
+
+```{r}
+county_summary <- co_final %>% # Start with the joined spatial data.
+  st_drop_geometry() %>% # Remove geometry for county-level summary calculations.
+  group_by(County) %>% # Group census tracts by county.
+  summarize( # Calculate county-level summary statistics.
+    total_tracts = n(), # Count the total number of census tracts in each county.
+    food_desert_tracts = sum(LILATracts_1And10 == 1, na.rm = TRUE), # Count food desert tracts in each county.
+    food_desert_rate = food_desert_tracts / total_tracts, # Calculate the share of tracts that are food deserts.
+    total_population = sum(POP2010, na.rm = TRUE) # Calculate total 2010 population in each county.
+  ) %>%
+  arrange(desc(food_desert_tracts)) # Sort counties from most to fewest food desert tracts.
+
+county_summary %>% # Start with the county summary table.
+  head(10) %>% # Keep only the top 10 counties.
+  mutate(food_desert_rate = round(food_desert_rate, 3)) # Round the food desert rate for easier reading.
+```
+
+The county-level summary shows that Denver, El Paso, Pueblo, Adams, and Jefferson had some of the highest numbers of food desert tracts. This result suggests that food desert issues were not only rural. Several large and urbanized counties also contained many food desert census tracts.
+
+### 4.3 Interactive Bar Chart of Top Counties
+
+The interactive bar chart below visualizes the county-level pattern. It makes it easier to compare counties by the number of food desert tracts. Readers can hover over each bar to see the county name, number of food desert tracts, total number of tracts, and food desert rate.
+
+```{r}
+top_counties <- county_summary %>% # Start with the county summary table.
+  slice_max(food_desert_tracts, n = 10) %>% # Select the 10 counties with the most food desert tracts.
+  mutate( # Create hover text for the interactive bar chart.
+    hover_text = paste0("County: ", County, "<br>Food desert tracts: ", food_desert_tracts, "<br>Total tracts: ", total_tracts, "<br>Food desert rate: ", round(food_desert_rate * 100, 1), "%") # Combine county summary values into hover text.
+  )
+
+bar_plot <- ggplot( # Create a static ggplot bar chart first.
+  top_counties, # Use the top counties data frame.
+  aes(x = reorder(County, food_desert_tracts), y = food_desert_tracts, text = hover_text) # Map counties, counts, and hover text.
+) +
+  geom_col(fill = "steelblue") + # Add bars and set the bar color.
+  coord_flip() + # Flip the chart so county names are easier to read.
+  labs( # Add plot title and axis labels.
+    title = "Top Colorado Counties by Number of Food Desert Tracts", # Add the main title.
+    x = "County", # Label the county axis.
+    y = "Number of food desert tracts" # Label the count axis.
+  ) +
+  theme_minimal() # Use a clean minimal theme.
+
+ggplotly(bar_plot, tooltip = "text") # Convert the ggplot bar chart into an interactive plotly graphic.
+```
+
+The bar chart confirms that Denver had the largest number of food desert tracts in this dataset, followed by El Paso and Pueblo. However, this does not necessarily mean that these counties had the worst food access conditions overall. Larger counties usually contain more census tracts, so they may naturally have more food desert tracts. A future analysis could also compare food desert rates instead of only total counts.
+
+### 4.4 Food Desert Patterns by Urban and Rural Status
+
+In addition to looking at counties, I also compare food desert patterns between urban and rural census tracts. This helps answer whether food desert tracts were more common in urban or rural areas of Colorado.
+
+```{r}
+urban_rural_summary <- co_final %>% # Start with the joined spatial data.
+  st_drop_geometry() %>% # Remove geometry for regular summary calculations.
+  mutate( # Create a readable area type variable.
+    area_type = ifelse(Urban == 1, "Urban", "Rural") # Classify each tract as urban or rural.
+  ) %>%
+  group_by(area_type) %>% # Group census tracts by urban or rural status.
+  summarize( # Calculate summary statistics for each area type.
+    total_tracts = n(), # Count the total number of tracts in each area type.
+    food_desert_tracts = sum(LILATracts_1And10 == 1, na.rm = TRUE), # Count food desert tracts.
+    food_desert_rate = food_desert_tracts / total_tracts # Calculate the food desert rate.
+  ) %>%
+  mutate( # Create hover text for the interactive chart.
+    hover_text = paste0("Area type: ", area_type, "<br>Food desert tracts: ", food_desert_tracts, "<br>Total tracts: ", total_tracts, "<br>Food desert rate: ", round(food_desert_rate * 100, 1), "%") # Combine summary values into hover text.
+  )
+
+urban_rural_summary # Display the urban-rural summary table.
+```
+
+```{r}
+urban_rural_plot <- ggplot( # Create a static ggplot bar chart first.
+  urban_rural_summary, # Use the urban-rural summary data.
+  aes(x = area_type, y = food_desert_rate, text = hover_text) # Map area type, food desert rate, and hover text.
+) +
+  geom_col(fill = "steelblue") + # Add bars to compare urban and rural food desert rates.
+  labs( # Add title and axis labels.
+    title = "Food Desert Rate by Urban and Rural Status", # Add the main title.
+    x = "Area type", # Label the x-axis.
+    y = "Food desert rate" # Label the y-axis.
+  ) +
+  theme_minimal() # Use a clean minimal theme.
+
+ggplotly(urban_rural_plot, tooltip = "text") # Convert the ggplot chart into an interactive plotly graphic.
+```
+
+This comparison adds another perspective to the analysis. The county-level chart shows where the largest numbers of food desert tracts were located, while the urban-rural comparison shows whether food desert classification was more common in urban or rural census tracts.
+
+## 5. Summary
+
+This project analyzed the spatial distribution of food desert census tracts in Colorado using 2010 USDA food access data and a 2010 Colorado census tract shapefile. The main purpose was to identify where food desert tracts were located and which counties had the largest number of these tracts.
+
+The data preparation process focused on joining the USDA data with the shapefile using census tract IDs. This required importing the census tract ID as a character variable and padding it to 11 digits so it would match the `GEOID10` field in the shapefile. After cleaning and joining the data, the final dataset included 1,249 Colorado census tracts, and 187 of them were classified as food desert tracts.
+
+The interactive map shows that food desert tracts were spread across the state rather than concentrated in only one region. The county-level summary shows that Denver, El Paso, Pueblo, Adams, and Jefferson had some of the largest numbers of food desert tracts. This suggests that food access problems existed in both urban and rural settings.
+
+The urban-rural comparison adds another important finding. It shows whether food desert classification was more common in urban or rural census tracts, which helps separate geographic location from county size. This makes the analysis more useful than only listing counties with the largest number of food desert tracts.
+
+The main implication is that food desert policy should consider geography. Rural areas may need transportation support or regional food distribution strategies, while urban areas may need better neighborhood-level grocery access and transit connections.
+
+One limitation of this project is that it uses 2010 data, so the results may not represent current food access conditions in Colorado. Another limitation is that census tracts are large geographic units, especially in rural areas, so conditions within a tract may vary. Future research could use newer food access data, compare changes over time, or include additional factors such as public transportation, vehicle access, income, and grocery store locations.
